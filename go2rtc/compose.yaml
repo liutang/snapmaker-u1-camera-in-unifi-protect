@@ -1,0 +1,17 @@
+# go2rtc for a Snapmaker U1 camera in UniFi Protect. Setup steps are in the README.
+# Put go2rtc.yaml and Lato-Bold.ttf in ./config, and create ./config/overlay before starting.
+# Set RTSP_PASSWORD in a .env file next to this one.
+services:
+  go2rtc:
+    image: alexxit/go2rtc:1.9.15
+    container_name: go2rtc
+    restart: unless-stopped
+    # Protect connects on 1984 (ONVIF) and 8554 (RTSP).
+    network_mode: host
+    environment:
+      - RTSP_PASSWORD=${RTSP_PASSWORD}
+      # Time zone for the overlay clock, in POSIX form so it works even if the image has no
+      # time zone data. UTC0 is UTC; change it to yours (examples in the README, Step 2).
+      - TZ=UTC0
+    volumes:
+      - ./config:/config

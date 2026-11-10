@@ -1,0 +1,152 @@
+[
+  {
+    "id": "75316f7665720001",
+    "type": "comment",
+    "name": "Snapmaker U1 overlay for go2rtc",
+    "info": "Writes the status line for the U1 camera in UniFi Protect to /overlay/status.txt.\ngo2rtc's ffmpeg re-reads that file once a second and draws it on the video.\nSettings (printer address and name) are in the \"Every 10 s\" node.\nEach write goes to a temp file that is renamed into place, because ffmpeg stops the stream if the file is missing.",
+    "x": 190,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "75316f7665720002",
+    "type": "inject",
+    "name": "Every 10 s",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "moonraker",
+        "v": "http://PRINTER_IP:7125",
+        "vt": "str"
+      },
+      {
+        "p": "printer_name",
+        "v": "Snapmaker U1",
+        "vt": "str"
+      }
+    ],
+    "repeat": "10",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "5",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 130,
+    "y": 100,
+    "wires": [
+      [
+        "75316f7665720030"
+      ]
+    ]
+  },
+  {
+    "id": "75316f7665720030",
+    "type": "http request",
+    "name": "Printer status",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "{{{moonraker}}}/printer/objects/query?print_stats&display_status=progress",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 310,
+    "y": 100,
+    "wires": [
+      [
+        "75316f7665720031"
+      ]
+    ]
+  },
+  {
+    "id": "75316f7665720031",
+    "type": "function",
+    "name": "Printing? Get slicer estimate",
+    "func": "// Keeps the printer status from \"Printer status\". During a print, also asks Moonraker for the\n// file's metadata, which holds the slicer's time estimate for the finish time.\nmsg.status = msg.statusCode === 200 ? msg.payload?.result?.status : null;\nconst stats = msg.status?.print_stats;\nif (stats && (stats.state === 'printing' || stats.state === 'paused') && stats.filename) {\n    // The http request node would send the previous response's headers with the next request.\n    delete msg.headers;\n    msg.url = msg.moonraker + '/server/files/metadata?filename=' + encodeURIComponent(stats.filename);\n    return [msg, null];\n}\nreturn [null, msg];\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 530,
+    "y": 100,
+    "wires": [
+      [
+        "75316f7665720032"
+      ],
+      [
+        "75316f7665720020"
+      ]
+    ]
+  },
+  {
+    "id": "75316f7665720032",
+    "type": "http request",
+    "name": "Slicer estimate",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 750,
+    "y": 80,
+    "wires": [
+      [
+        "75316f7665720020"
+      ]
+    ]
+  },
+  {
+    "id": "75316f7665720020",
+    "type": "function",
+    "name": "Compose overlay text",
+    "func": "// Builds the go2rtc drawtext line:\n//   printing: \"<clock> | Snapmaker U1 - 42.0% - 120/240 - 3:45 PM\"\n//   paused:   \"<clock> | Snapmaker U1 - Paused - 42.0% - 120/240\"\n//   other:    \"<clock> | Snapmaker U1\"\n// Everything comes from the printer's Moonraker, the same numbers as its screen.\n// ffmpeg draws the clock itself (%{localtime}), in strftime format. For a 24-hour clock use '%Y-%m-%d %H:%M:%S'.\n// In drawtext text, a literal % must be written as \\%.\nconst clock = \"%{localtime:'%Y-%m-%d %I:%M:%S %p'}\";\nconst stats = msg.status?.print_stats;\nconst printing = stats?.state === 'printing';\nconst paused = stats?.state === 'paused';\n\nconst parts = [msg.printer_name || 'Snapmaker U1'];\nif (printing || paused) {\n    if (paused) parts.push('Paused');\n\n    // The slicer's M73 progress, 0 to 1.\n    const done = Number(msg.status.display_status?.progress);\n    parts.push(Number.isFinite(done) ? `${(done * 100).toFixed(1)}\\\\%` : '--\\\\%');\n\n    // The slicer's SET_PRINT_STATS_INFO layer counter. Left out if the file doesn't set it.\n    const layer = parseInt(stats.info?.current_layer, 10);\n    const total = parseInt(stats.info?.total_layer, 10);\n    if (total > 0) {\n        parts.push(`${Number.isFinite(layer) && layer >= 0 ? layer : 0}/${total}`);\n    }\n\n    if (printing) {\n        // The slicer's estimate for the part not yet done, like the M73 time on the printer's screen.\n        // Not estimate minus print_duration: that counts the calibration before layer 1 as printing,\n        // and ran 5 minutes early on a 32-minute Benchy. Missing if \"Slicer estimate\" got no answer.\n        const meta = msg.payload?.result?.filename === stats.filename ? msg.payload.result : null;\n        const left = Number(meta?.estimated_time) * (1 - done);\n        if (Number.isFinite(left)) {\n            const finish = new Date(Date.now() + Math.max(left, 0) * 1000);\n            let hours = finish.getHours();\n            let minutes = finish.getMinutes();\n            let ampm = hours >= 12 ? 'PM' : 'AM';\n            hours = hours % 12 || 12;\n            minutes = minutes.toString().padStart(2, '0');\n            parts.push(`${hours}:${minutes} ${ampm}`);\n        } else {\n            parts.push('--:--');\n        }\n    }\n}\n\nmsg.payload = `${clock} | ${parts.join(' - ')}`;\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 330,
+    "y": 180,
+    "wires": [
+      [
+        "75316f7665720025"
+      ]
+    ]
+  },
+  {
+    "id": "75316f7665720025",
+    "type": "function",
+    "name": "Write overlay file",
+    "func": "// Writes the overlay line for go2rtc's ffmpeg. It goes to a temp file first and is renamed into\n// place, because ffmpeg stops the stream if it reads status.txt while it's missing.\n// Each write gets its own temp name: with one shared name, two writes close together could\n// rename each other's file, and the second rename failed with \"No such file\".\nconst dest = '/overlay/status.txt';\nconst tmp = `${dest}.${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;\nfs.promises.writeFile(tmp, msg.payload, 'utf8')\n    .then(() => fs.promises.rename(tmp, dest))\n    .then(() => node.done())\n    .catch(err => {\n        fs.promises.unlink(tmp).catch(() => {});\n        node.error(`Overlay write failed: ${err.message}`, msg);\n    });\nreturn null;\n",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      }
+    ],
+    "x": 560,
+    "y": 180,
+    "wires": []
+  }
+]

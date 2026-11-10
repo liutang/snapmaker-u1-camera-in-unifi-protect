@@ -1,0 +1,29 @@
+# go2rtc config for a Snapmaker U1 camera in UniFi Protect. Setup steps are in the README.
+# Replace PRINTER_IP with the printer's address. RTSP_PASSWORD comes from compose.yaml.
+
+api:
+  listen: ":1984"
+  # Uncomment after Protect adopts the camera, then restart go2rtc. It blocks the web UI and API
+  # but lets through Protect's ONVIF calls and snapshots.
+  # allow_paths: ["/onvif/", "/api/frame.jpeg"]
+
+rtsp:
+  listen: ":8554"
+  username: "u1"
+  password: "${RTSP_PASSWORD}"
+
+webrtc:
+  listen: ""
+
+streams:
+  # ffmpeg reads the printer's H.264 feed over HTTP, burns in the status line from overlay/status.txt
+  # (re-read every 30 frames) and re-encodes it.
+  # -framerate must match the feed: 30 fps on the U1, even with its frame rate set lower.
+  # sliced-threads=0: -tune zerolatency otherwise splits each frame into one slice per CPU thread,
+  # and Protect's live view draws only the first slice and leaves the rest green.
+  snapmaker_u1: "exec:ffmpeg -hide_banner -loglevel error -fflags +genpts -f h264 -framerate 30 -i http://PRINTER_IP/webcam/stream.h264 -map 0:v -vf drawtext=fontfile=/config/Lato-Bold.ttf:textfile=/config/overlay/status.txt:reload=30:x=8:y=5:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=6 -c:v libx264 -preset veryfast -tune zerolatency -x264-params sliced-threads=0 -g 60 -b:v 2000k -maxrate 2000k -bufsize 4000k -rtsp_transport tcp -f rtsp {output}"
+  # Without the overlay: copies the video as-is and uses almost no CPU. Use this line instead of the one above.
+  # snapmaker_u1: "exec:ffmpeg -hide_banner -loglevel error -fflags +genpts -f h264 -framerate 30 -i http://PRINTER_IP/webcam/stream.h264 -map 0:v -c:v copy -rtsp_transport tcp -f rtsp {output}"
+
+preload:
+  snapmaker_u1: "video"
